@@ -385,4 +385,5 @@ cd bookleaf-portal
 composer install
 
 # 3. Environment configuration
-cp .env.example .env
+cp .env.example .env#   b o o k l e a f - p o r t a l  
+ 
