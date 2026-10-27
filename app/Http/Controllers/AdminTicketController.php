@@ -25,7 +25,7 @@ class AdminTicketController extends Controller
             'timestamp'  => now()->toIso8601String(),
             'action'     => $action,
             'admin_id'   => $admin ? ($admin->_id ?? $admin->id) : null,
-            'admin_email'=> $admin->email ?? 'guest',
+            'admin_email' => $admin->email ?? 'guest',
             'ip'         => request()->ip(),
         ], $context);
 
@@ -309,21 +309,26 @@ class AdminTicketController extends Controller
                 ], 404);
             }
 
+            // Agar ticket open hai, toh assign hone par in_progress set karein
+            $newStatus = ($ticket->status === 'open') ? 'in_progress' : $ticket->status;
+
             $ticket->update([
                 'assigned_to'   => $admin->_id ?? $admin->id,
                 'assigned_name' => $admin->name,
+                'status'        => $newStatus,
             ]);
 
             $this->logAdminAction('info', 'TICKET_ASSIGNED_TO_SELF', [
                 'ticket_id'     => $ticket_id,
                 'assigned_to'   => $admin->_id ?? $admin->id,
-                'assigned_name' => $admin->name
+                'assigned_name' => $admin->name,
+                'status'        => $newStatus,
             ]);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Ticket assigned successfully.',
-                'ticket'  => $ticket
+                'ticket'  => $ticket->fresh()
             ], 200);
         } catch (Throwable $e) {
             $this->logAdminAction('error', 'ASSIGN_TICKET_FAILED', ['ticket_id' => $ticket_id], $e);
