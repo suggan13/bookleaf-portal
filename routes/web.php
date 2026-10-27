@@ -40,3 +40,20 @@ Route::middleware(['web', 'admin'])->prefix('api/admin')->group(function () {
     // AI Live Draft Regeneration Route
     Route::post('/tickets/{ticket_id}/regenerate-draft', [AdminTicketController::class, 'regenerateDraft']);
 });
+
+use Illuminate\Support\Facades\Artisan;
+
+Route::get('/run-database-seed-atlas', function () {
+    try {
+        Artisan::call('db:seed', ['--force' => true]);
+        return response()->json([
+            'status' => 'success',
+            'output' => Artisan::output(),
+        ]);
+    } catch (\Throwable $e) {
+        return response()->json([
+            'status' => 'error',
+            'message' => $e->getMessage(),
+        ], 500);
+    }
+});
