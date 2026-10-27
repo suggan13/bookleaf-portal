@@ -385,5 +385,68 @@ cd bookleaf-portal
 composer install
 
 # 3. Environment configuration
-cp .env.example .env#   b o o k l e a f - p o r t a l  
- 
+cp .env.example .env#
+
+# BookLeaf Publishing — Author Support & Communication Portal
+
+An enterprise-grade, AI-assisted support portal designed to resolve author queries at scale with policy-grounded automated drafting, role isolation, and real-time multi-turn resolution tracking.
+
+**Live Application URL:** https://bookleaf-portal-7l2x.onrender.com/
+
+---
+
+## 1. Quick Test Login Credentials
+
+| Role | Email | Password | Access Scope |
+| :--- | :--- | :--- | :--- |
+| **Ops Admin** | `admin@bookleafpub.com` | `admin123` | Full queue, AI studio, directory, internal notes |
+| **Author (Priya)** | `priya.sharma@email.com` | `password123` | AUTH001 books, royalties, tickets isolation |
+| **Author (Rohit)** | `rohit.kapoor@email.com` | `password123` | AUTH002 books, royalties, multi-turn replies |
+| **Author (Sunita)**| `sunita.deshmukh@email.com` | `password123` | AUTH005 In-production pipeline tracking |
+
+*(You can also use the 1-Click Login buttons on the portal home screen).*
+
+---
+
+## 2. Tech Stack & Architectural Decisions
+
+- **Backend:** Laravel 11 (PHP 8.2+) structured with Single Responsibility Controllers (`AuthorController`, `AdminTicketController`, `TicketController`), Custom Role Middlewares (`author`, `admin`), and an isolated `AIService`.
+- **Frontend:** Alpine.js (Reactive component state engine) + Tailwind CSS (Utility-first responsive layout) + Phosphor Icons.
+- **Database:** MongoDB / Relational Schema handling embedded multi-turn discussion arrays (`messages`), author catalogs, and ticket lifecycle tracking.
+- **AI Engine:** OpenAI API (`gpt-4o-mini`) grounded in BookLeaf's publisher knowledge base (80/20 net split, 45-day quarterly payout, ₹1,000 threshold, verified complimentary reprint guarantee).
+- **Responsiveness:** Non-blocking Client-Side Polling (7s interval, pausing automatically while authors type follow-up messages).
+
+---
+
+## 3. AI Integration Strategy
+
+1. **Knowledge Base Grounding:** System prompts inject BookLeaf's exact operating guidelines (quarterly settlement timelines, net profit formulas, reprint verification policies) to eliminate hallucinated promises.
+2. **Recent-Message Awareness:** When generating or regenerating drafts, the AI inspects the author's most recent follow-up message (e.g., dissatisfaction, timeline disputes) and crafts context-specific resolutions.
+3. **Cost Optimization:** Using `gpt-4o-mini` with constrained token limits and localized message history pruning rather than passing unbounded conversation blobs.
+4. **Graceful Degradation:** If the OpenAI API is unreachable or rate-limited, the system falls back to a deterministic, policy-calibrated rule engine without interrupting ticket lifecycle operations.
+
+---
+
+## 4. Local Setup Instructions
+
+```bash
+# 1. Clone repository
+git clone <your-repo-url>
+cd bookleaf-portal
+
+# 2. Install dependencies
+composer install
+
+# 3. Environment configuration
+cp .env.example .env
+php artisan key:generate
+
+# Configure MongoDB and OpenAI in .env:
+# DB_CONNECTION=mongodb
+# OPENAI_API_KEY=your_openai_api_key
+
+# 4. Run Migrations & Seeds
+php artisan migrate --seed
+
+# 5. Start Local Server
+php artisan serve
