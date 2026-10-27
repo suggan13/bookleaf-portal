@@ -22,11 +22,11 @@ class AdminTicketController extends Controller
         $date = now()->format('Y-m-d');
 
         $payload = array_merge([
-            'timestamp'  => now()->toIso8601String(),
-            'action'     => $action,
-            'admin_id'   => $admin ? ($admin->_id ?? $admin->id) : null,
+            'timestamp'   => now()->toIso8601String(),
+            'action'      => $action,
+            'admin_id'    => $admin ? ($admin->_id ?? $admin->id) : null,
             'admin_email' => $admin->email ?? 'guest',
-            'ip'         => request()->ip(),
+            'ip'          => request()->ip(),
         ], $context);
 
         if ($exception) {
@@ -37,7 +37,7 @@ class AdminTicketController extends Controller
         // Standard Laravel logger
         Log::channel('single')->{$level}("[ADMIN-{$date}] {$action}", $payload);
 
-        // Optional custom daily audit log file
+        // Daily isolated audit log file
         try {
             Log::build([
                 'driver' => 'single',
@@ -230,64 +230,61 @@ class AdminTicketController extends Controller
 
     /**
      * POST /api/admin/tickets/{ticket_id}/reply
+     * Admin: Send response to author and append to discussion thread
      */
     public function sendResponse(Request $request, $ticket_id)
     {
-        try {
-            $this->verifyAdmin();
+        $this->verifyAdmin();
+        $admin = Auth::user();
 
-            $validated = $request->validate([
-                'response'       => 'required|string',
-                'status'         => 'nullable|string|in:Open,In Progress,Resolved,Closed',
-                'internal_notes' => 'nullable|string',
-                'category'       => 'nullable|string',
-                'priority'       => 'nullable|string',
-            ]);
+        $validated = $request->validate([
+            'response'       => 'required|string|min:2',
+            'status'         => 'nullable|string|in:Open,In Progress,Resolved,Closed',
+            'internal_notes' => 'nullable|string',
+            'category'       => 'nullable|string',
+            'priority'       => 'nullable|string'
+        ]);
 
-            $ticket = Ticket::where('ticket_id', $ticket_id)->first();
+        $ticket = Ticket::where('ticket_id', $ticket_id)->firstOrFail();
 
-            if (!$ticket) {
-                $this->logAdminAction('warning', 'REPLY_TICKET_NOT_FOUND', ['ticket_id' => $ticket_id]);
-                return response()->json([
-                    'success' => false,
-                    'message' => "Ticket {$ticket_id} not found."
-                ], 404);
-            }
+        $messages = $ticket->messages ?? [];
 
-            $ticket->update([
-                'admin_response' => $validated['response'],
-                'status'         => $request->input('status', 'Resolved'),
-                'internal_notes' => $request->input('internal_notes', $ticket->internal_notes),
-                'category'       => $request->input('category', $ticket->category),
-                'priority'       => $request->input('priority', $ticket->priority),
-                'replied_at'     => now()->format('Y-m-d H:i'),
-            ]);
-
-            $this->logAdminAction('info', 'OFFICIAL_RESPONSE_DISPATCHED', [
-                'ticket_id' => $ticket_id,
-                'status'    => $ticket->status,
-                'has_notes' => !empty($ticket->internal_notes)
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Official response sent to author successfully.',
-                'ticket'  => $ticket
-            ], 200);
-        } catch (ValidationException $ve) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation error',
-                'errors'  => $ve->errors()
-            ], 422);
-        } catch (Throwable $e) {
-            $this->logAdminAction('error', 'REPLY_DISPATCH_FAILED', ['ticket_id' => $ticket_id], $e);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Could not dispatch response to author.'
-            ], 500);
+        // Fallback agar messages empty ho
+        if (empty($messages) && !empty($ticket->description)) {
+            $messages[] = [
+                'sender'    => 'author',
+                'name'      => $ticket->author_name ?? 'Author',
+                'message'   => $ticket->description,
+                'timestamp' => $ticket->created_at ? (string)$ticket->created_at : now()->toIso8601String()
+            ];
         }
+
+        // Append Admin's reply to the chat history
+        $messages[] = [
+            'sender'    => 'admin',
+            'name'      => $admin->name ?? 'BookLeaf Operations',
+            'message'   => trim($validated['response']),
+            'timestamp' => now()->toIso8601String()
+        ];
+
+        $newStatus = $validated['status'] ?? 'Resolved';
+
+        $ticket->update([
+            'admin_response' => trim($validated['response']),
+            'messages'       => $messages,
+            'status'         => $newStatus,
+            'internal_notes' => $validated['internal_notes'] ?? $ticket->internal_notes,
+            'category'       => $validated['category'] ?? $ticket->category,
+            'priority'       => $validated['priority'] ?? $ticket->priority,
+            'replied_at'     => now()->toIso8601String(),
+            'updated_at'     => now()->toIso8601String()
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Response dispatched and added to thread.',
+            'ticket'  => $ticket->fresh()
+        ]);
     }
 
     /**
@@ -309,13 +306,14 @@ class AdminTicketController extends Controller
                 ], 404);
             }
 
-            // Agar ticket open hai, toh assign hone par in_progress set karein
-            $newStatus = ($ticket->status === 'open') ? 'in_progress' : $ticket->status;
+            // Title Case standardization: Agar ticket 'Open' tha, toh automatically 'In Progress' karein
+            $newStatus = ($ticket->status === 'Open' || $ticket->status === 'open') ? 'In Progress' : $ticket->status;
 
             $ticket->update([
                 'assigned_to'   => $admin->_id ?? $admin->id,
                 'assigned_name' => $admin->name,
                 'status'        => $newStatus,
+                'updated_at'    => now()->toIso8601String(),
             ]);
 
             $this->logAdminAction('info', 'TICKET_ASSIGNED_TO_SELF', [
@@ -344,46 +342,57 @@ class AdminTicketController extends Controller
      * POST /api/admin/tickets/{ticket_id}/regenerate-draft
      */
     public function regenerateDraft(Request $request, $ticket_id, AIService $aiService)
-    {
-        try {
-            $this->verifyAdmin();
+{
+    try {
+        $this->verifyAdmin();
 
-            $ticket = Ticket::where('ticket_id', $ticket_id)->first();
+        $ticket = Ticket::where('ticket_id', $ticket_id)->first();
 
-            if (!$ticket) {
-                $this->logAdminAction('warning', 'REGENERATE_DRAFT_NOT_FOUND', ['ticket_id' => $ticket_id]);
-                return response()->json([
-                    'success' => false,
-                    'message' => "Ticket {$ticket_id} not found."
-                ], 404);
-            }
-
-            $category = $request->input('category', $ticket->category);
-
-            $draft = $aiService->generateDraftResponse([
-                'author_name' => $ticket->author_name,
-                'book_title'  => $ticket->book_title,
-                'subject'     => $ticket->subject,
-                'description' => $ticket->description,
-                'category'    => $category,
-            ]);
-
-            $this->logAdminAction('info', 'AI_DRAFT_REGENERATED', [
-                'ticket_id' => $ticket_id,
-                'category'  => $category
-            ]);
-
-            return response()->json([
-                'success'           => true,
-                'ai_draft_response' => $draft
-            ], 200);
-        } catch (Throwable $e) {
-            $this->logAdminAction('error', 'REGENERATE_DRAFT_FAILED', ['ticket_id' => $ticket_id], $e);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to regenerate AI draft.'
-            ], 500);
+        if (!$ticket) {
+            return response()->json(['success' => false, 'message' => "Ticket {$ticket_id} not found."], 404);
         }
+
+        $category = $request->input('category', $ticket->category);
+
+        // Find the latest message sent by the author in the thread
+        $messages = $ticket->messages ?? [];
+        $latestAuthorMsg = $ticket->description; // default fallback
+
+        if (!empty($messages)) {
+            // Reverse loop to find the most recent message from author
+            for ($i = count($messages) - 1; $i >= 0; $i--) {
+                if (($messages[$i]['sender'] ?? '') === 'author') {
+                    $latestAuthorMsg = $messages[$i]['message'];
+                    break;
+                }
+            }
+        }
+
+        $draft = $aiService->generateDraftResponse([
+            'author_name'           => $ticket->author_name,
+            'book_title'            => $ticket->book_title,
+            'subject'               => $ticket->subject,
+            'description'           => $ticket->description,
+            'latest_author_message' => $latestAuthorMsg,
+            'category'              => $category,
+        ]);
+
+        $this->logAdminAction('info', 'AI_DRAFT_REGENERATED_FROM_RECENT_CHAT', [
+            'ticket_id'      => $ticket_id,
+            'category'       => $category,
+            'recent_message' => substr($latestAuthorMsg, 0, 50) . '...'
+        ]);
+
+        return response()->json([
+            'success'           => true,
+            'ai_draft_response' => $draft
+        ], 200);
+
+    } catch (Throwable $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Failed to regenerate AI draft: ' . $e->getMessage()
+        ], 500);
     }
+}
 }

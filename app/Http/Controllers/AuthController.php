@@ -65,61 +65,26 @@ class AuthController extends Controller
      */
     public function login(Request $request)
     {
-        try {
-            $validated = $request->validate([
-                'email'    => 'required|email',
-                'password' => 'required',
-            ]);
+        $credentials = $request->validate([
+            'email'    => 'required|email',
+            'password' => 'required',
+        ]);
 
-            $user = User::where('email', $validated['email'])->first();
-
-            if (!$user || !Hash::check($validated['password'], $user->password)) {
-                $this->logAuthAction('warning', 'LOGIN_FAILED_INVALID_CREDENTIALS', [
-                    'attempted_email' => $validated['email']
-                ]);
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid email or password.'
-                ], 401);
-            }
-
-            // Authenticate via Laravel Session
-            Auth::login($user);
+        if (Auth::attempt($credentials)) {
+            // Session fixation prevent karein aur fresh session create karein
             $request->session()->regenerate();
-
-            $this->logAuthAction('info', 'LOGIN_SUCCESSFUL', [
-                'role'      => $user->role,
-                'author_id' => $user->author_id
-            ]);
+            $request->session()->save(); // <--- Zaroori: Session ko cookie mein turant commit karein
 
             return response()->json([
                 'success' => true,
-                'message' => 'Login successful',
-                'user'    => [
-                    'id'        => $user->_id ?? $user->id,
-                    'name'      => $user->name,
-                    'email'     => $user->email,
-                    'role'      => $user->role,
-                    'author_id' => $user->author_id,
-                ]
+                'user'    => Auth::user(),
             ], 200);
-        } catch (ValidationException $ve) {
-            $this->logAuthAction('warning', 'LOGIN_VALIDATION_FAILED', ['errors' => $ve->errors()]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation error',
-                'errors'  => $ve->errors()
-            ], 422);
-        } catch (Throwable $e) {
-            $this->logAuthAction('error', 'LOGIN_CRITICAL_FAILURE', [], $e);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Authentication system encountered an error. Please try again.'
-            ], 500);
         }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Invalid email or password.'
+        ], 401);
     }
 
     /**
@@ -159,7 +124,7 @@ class AuthController extends Controller
     {
         try {
             $user = Auth::user();
-            
+
             $this->logAuthAction('info', 'USER_LOGOUT', [
                 'user_id' => $user ? ($user->_id ?? $user->id) : null
             ]);
@@ -291,8 +256,8 @@ class AuthController extends Controller
             $bookTitle = 'General / Account Level';
             if (!empty($validated['book_id']) && $validated['book_id'] !== 'general') {
                 $book = Book::where('book_id', $validated['book_id'])
-                            ->where('author_id', $user->author_id)
-                            ->first();
+                    ->where('author_id', $user->author_id)
+                    ->first();
                 if ($book) {
                     $bookTitle = $book->title;
                 }

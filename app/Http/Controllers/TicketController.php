@@ -35,6 +35,7 @@ class TicketController extends Controller
             'author_id'  => $user->author_id ?? null,
             'email'      => $user->email ?? 'guest',
             'ip'         => request()->ip(),
+            'user_agent' => request()->userAgent(),
         ], $context);
 
         if ($exception) {
@@ -93,7 +94,7 @@ class TicketController extends Controller
     }
 
     /**
-     * Author: Submit a new support query with Policy-Grounded AI Triage
+     * Author: Submit a new support query with Policy-Grounded AI Triage & Thread Initialization
      */
     public function store(Request $request)
     {
@@ -146,6 +147,17 @@ class TicketController extends Controller
             // Sequence ID generate karein (TCK-0001, TCK-0002...)
             $ticketCount = Ticket::count() + 1;
             $ticketId = 'TCK-' . str_pad((string)$ticketCount, 4, '0', STR_PAD_LEFT);
+            $createdAt = now()->toIso8601String();
+
+            // Initial conversation message list
+            $initialMessages = [
+                [
+                    'sender'    => 'author',
+                    'name'      => $user->name,
+                    'message'   => $validated['description'],
+                    'timestamp' => $createdAt
+                ]
+            ];
 
             $ticket = Ticket::create([
                 'ticket_id'          => $ticketId,
@@ -161,10 +173,11 @@ class TicketController extends Controller
                 'status'             => 'Open',
                 'ai_draft_response'  => $aiDraft,
                 'admin_response'     => null,
+                'messages'           => $initialMessages,
                 'internal_notes'     => null,
                 'assigned_to'        => null,
                 'assigned_name'      => null,
-                'created_at'         => now()->toIso8601String(),
+                'created_at'         => $createdAt,
             ]);
 
             $this->logTicketAction('info', 'TICKET_CREATED_SUCCESS', [
@@ -235,6 +248,114 @@ class TicketController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Error retrieving ticket details.'
+            ], 500);
+        }
+    }
+
+    /**
+     * Author: Follow-up message / Auto-reopen ticket if unsatisfied with resolution
+     */
+    public function replyTicket(Request $request, $ticket_id)
+    {
+        $user = Auth::user();
+
+        $validated = $request->validate([
+            'message' => 'required|string|min:2'
+        ]);
+
+        $ticket = Ticket::where('ticket_id', $ticket_id)
+            ->where('author_id', $user->author_id)
+            ->firstOrFail();
+
+        if ($ticket->status === 'Closed') {
+            return response()->json(['success' => false, 'message' => 'This ticket is closed.'], 400);
+        }
+
+        $messages = $ticket->messages ?? [];
+
+        // Fallback: Agar pehla message description se initialize nahi hua tha
+        if (empty($messages) && !empty($ticket->description)) {
+            $messages[] = [
+                'sender'    => 'author',
+                'name'      => $ticket->author_name ?? $user->name,
+                'message'   => $ticket->description,
+                'timestamp' => $ticket->created_at ? (string)$ticket->created_at : now()->toIso8601String()
+            ];
+        }
+
+        // Append new author message
+        $messages[] = [
+            'sender'    => 'author',
+            'name'      => $user->name,
+            'message'   => trim($validated['message']),
+            'timestamp' => now()->toIso8601String()
+        ];
+
+        // Auto-reopen to 'In Progress' if it was marked 'Resolved'
+        $newStatus = ($ticket->status === 'Resolved') ? 'In Progress' : $ticket->status;
+
+        $ticket->update([
+            'messages'   => $messages,
+            'status'     => $newStatus,
+            'updated_at' => now()->toIso8601String()
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Message sent successfully.',
+            'ticket'  => $ticket->fresh()
+        ]);
+    }
+
+    
+
+    /**
+     * Author: Confirm satisfaction and permanently Close the ticket
+     */
+    public function closeTicket(Request $request, $ticket_id)
+    {
+        try {
+            $user = Auth::user();
+
+            if (!$user || $user->role !== 'author' || !$user->author_id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized access.'
+                ], 403);
+            }
+
+            $ticket = Ticket::where('ticket_id', $ticket_id)
+                ->where('author_id', $user->author_id)
+                ->first();
+
+            if (!$ticket) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ticket not found.'
+                ], 404);
+            }
+
+            $ticket->update([
+                'status'     => 'Closed',
+                'closed_at'  => now()->toIso8601String(),
+                'updated_at' => now()->toIso8601String()
+            ]);
+
+            $this->logTicketAction('info', 'TICKET_CLOSED_BY_AUTHOR', [
+                'ticket_id' => $ticket_id
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Ticket closed successfully.',
+                'ticket'  => $ticket->fresh()
+            ], 200);
+        } catch (Throwable $e) {
+            $this->logTicketAction('error', 'TICKET_CLOSE_FAILED', ['ticket_id' => $ticket_id], $e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to close ticket.'
             ], 500);
         }
     }

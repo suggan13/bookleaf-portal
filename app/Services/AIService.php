@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Throwable; 
 
 class AIService
 {
@@ -103,7 +104,7 @@ PROMPT;
     /**
      * Generate policy-grounded draft response for operations admin
      */
-    public function generateDraftResponse(array $ticket): string
+    public function generateDraftResponse1(array $ticket): string
     {
         $author = $ticket['author_name'] ?? 'Author';
         $book = $ticket['book_title'] ?? 'your title';
@@ -118,7 +119,7 @@ PROMPT;
         try {
             $kb = $this->getKnowledgeBase();
             $systemMessage = "You are a senior support lead at BookLeaf Publishing. Ground your response strictly on BookLeaf policies:\n" . $kb;
-            
+
             $userMessage = <<<USER
 Author: {$author}
 Book: {$book}
@@ -216,4 +217,120 @@ USER;
 
         return $salutation . $body . $signoff;
     }
+
+
+    public function generateDraftResponse2(array $context): string
+    {
+        $authorName = $context['author_name'] ?? 'Author';
+        $bookTitle  = $context['book_title'] ?? 'your book';
+        $category   = $context['category'] ?? 'General Inquiry';
+        $subject    = $context['subject'] ?? '';
+
+        // Check if there is a recent follow-up message in conversation thread
+        $latestAuthorMessage = $context['latest_author_message'] ?? $context['description'] ?? '';
+
+        // System prompt with BookLeaf policies
+        $prompt = "You are an operations support specialist at BookLeaf Publishing responding to author {$authorName}.\n"
+            . "Book: '{$bookTitle}'\n"
+            . "Category: {$category}\n"
+            . "Subject: {$subject}\n"
+            . "Author's Latest Query/Follow-up: \"{$latestAuthorMessage}\"\n\n"
+            . "BookLeaf Policies:\n"
+            . "- 80/20 Net Profit royalty split, paid quarterly within 45 days after quarter ends.\n"
+            . "- Minimum payout threshold: ₹1,000.\n"
+            . "- Free verified reprints for manufacturing defects (binding/color).\n"
+            . "- Distribution sync to retail (Amazon/Flipkart) takes 24-48 business hours.\n\n"
+            . "Draft a polite, professional, concise response addressing the author's specific follow-up directly.";
+
+        // Agar LLM API connected hai toh API call karein, warna smart fallback:
+        if ($category === 'Royalty & Payments') {
+            $body = "We have reviewed your follow-up regarding '{$bookTitle}'. Our accounts desk has pulled your transaction logs for this quarter. Under BookLeaf policy, quarterly net royalties (80/20 author profit share) are released within 45 days of quarter end once the ₹1,000 threshold is reached. Your pending disbursement has been prioritized for batch release.";
+        } elseif ($category === 'Printing & Quality') {
+            $body = "Regarding the issue mentioned in your latest message for '{$bookTitle}', our quality assurance desk has noted your concern. As per our policy, verified print or binding discrepancies are eligible for complimentary reprint replacement within 5-7 business days.";
+        } else {
+            $body = "Thank you for the additional details regarding '{$bookTitle}'. Our operations team is actively addressing the points raised in your latest message and will keep your dashboard updated.";
+        }
+
+        return "Dear {$authorName},\n\nThank you for reaching out to BookLeaf Publishing.\n\n{$body}\n\nPlease let us know if you have any further questions.\n\nWarm regards,\nBookLeaf Operations Team";
+    }
+
+
+
+
+    public function generateDraftResponse(array $context): string
+    {
+        $authorName     = $context['author_name'] ?? 'Author';
+        $bookTitle      = $context['book_title'] ?? 'General / Account Level';
+        $category       = $context['category'] ?? 'General Inquiry';
+        $subject        = $context['subject'] ?? '';
+        $latestChatMsg  = trim($context['latest_author_message'] ?? $context['description'] ?? '');
+
+        // Check if author expressed dissatisfaction or confusion
+        $isDissatisfied = (bool) preg_match('/(not\s*(satisfied|setisfied|happy)|still|issue|why|delay|when|wrong|date)/i', $latestChatMsg);
+
+        // 1. Agar OpenAI / Gemini API configured hai:
+        $apiKey = config('services.openai.key') ?? env('OPENAI_API_KEY');
+        if (!empty($apiKey)) {
+            try {
+                $systemPrompt = "You are a senior author-support manager at BookLeaf Publishing. "
+                    . "Draft a direct, empathetic, and professional reply to author '{$authorName}'.\n"
+                    . "Book/Topic: '{$bookTitle}'\n"
+                    . "Category: '{$category}'\n"
+                    . "Ticket Subject: '{$subject}'\n"
+                    . "Author's most recent follow-up message: \"{$latestChatMsg}\"\n\n"
+                    . "BookLeaf Guidelines:\n"
+                    . "- Author profit share: 80% net royalties calculated quarterly.\n"
+                    . "- Disbursement: Processed within 45 days of the quarter ending, provided accumulated payout reaches ₹1,000 threshold.\n"
+                    . "- Free reprints for verified print/binding defects within 5-7 business days.\n"
+                    . "Rules for response:\n"
+                    . "1. Address their exact latest message (\"{$latestChatMsg}\") directly in the very first 1-2 sentences.\n"
+                    . "2. If they say they are not satisfied or facing delays, do NOT repeat generic definitions. Instead, explain the concrete next step: state that their ledger statement is being pulled and escalated to the Senior Accounts/Finance Desk for expedited manual verification.\n"
+                    . "3. Sign off warmly from 'BookLeaf Operations Team'.";
+
+                $response = Http::withHeaders([
+                    'Authorization' => 'Bearer ' . $apiKey,
+                    'Content-Type'  => 'application/json',
+                ])->timeout(8)->post('https://api.openai.com/v1/chat/completions', [
+                    'model'       => 'gpt-4o-mini',
+                    'messages'    => [
+                        ['role' => 'system', 'content' => $systemPrompt],
+                        ['role' => 'user', 'content' => "Generate response addressing author's latest message: \"{$latestChatMsg}\""]
+                    ],
+                    'temperature' => 0.4,
+                    'max_tokens'  => 350,
+                ]);
+
+                if ($response->successful()) {
+                    $json = $response->json();
+                    $content = $json['choices'][0]['message']['content'] ?? null;
+                    if ($content) {
+                        return trim($content);
+                    }
+                }
+            } catch (Throwable $e) {
+                Log::warning('LLM Draft API failed, falling back to dynamic rule engine: ' . $e->getMessage());
+            }
+        }
+
+        // 2. Intelligent Dynamic Policy Engine (Runs offline or as fallback)
+        if ($isDissatisfied) {
+            if ($category === 'Royalty & Payments') {
+                $customBody = "We understand you are not satisfied with the previous explanation regarding your pending payout for '{$bookTitle}'. In light of your message (\"{$latestChatMsg}\"), we have marked your account for an immediate manual audit. Our Finance Desk is reconciling your net sales against the quarterly threshold, and we will email you the itemized disbursement breakdown within 24 to 48 business hours.";
+            } elseif ($category === 'Printing & Quality') {
+                $customBody = "We apologize that your concerns regarding copy quality remain unresolved. In reference to your message (\"{$latestChatMsg}\"), we have escalated this ticket to our Lead Production Supervisor for a reprint review. Replacements for verified discrepancies will be dispatched on priority.";
+            } else {
+                $customBody = "We understand your dissatisfaction with the progress on your query (\"{$latestChatMsg}\"). We have escalated this ticket to our Senior Operations Lead for immediate intervention and verification.";
+            }
+        } else {
+            if ($category === 'Royalty & Payments') {
+                $customBody = "In response to your query regarding '{$bookTitle}', BookLeaf follows an 80/20 net profit royalty split processed within 45 days post quarter-end for balances reaching the ₹1,000 threshold. Your ledger is currently under verification.";
+            } else {
+                $customBody = "Thank you for reaching out regarding '{$bookTitle}'. We have reviewed your query (\"{$latestChatMsg}\") and our operations team has initiated the necessary checks per standard policy.";
+            }
+        }
+
+        return "Dear {$authorName},\n\nThank you for reaching out to BookLeaf Publishing.\n\n{$customBody}\n\nPlease let us know if you have any additional questions in the meantime.\n\nWarm regards,\nBookLeaf Operations Team";
+    }
+
+    
 }

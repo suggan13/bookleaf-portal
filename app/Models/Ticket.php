@@ -25,6 +25,7 @@ class Ticket extends Model
         'admin_response',     // Actual response sent to author
         'internal_notes',     // Ops internal notes
         'assigned_to',        // Admin user
+        'messages',           // <--- Array of multi-turn chat objects
         'replied_at',
         'assigned_to',   // <-- Add this
         'assigned_name', // <-- Add this
@@ -34,6 +35,7 @@ class Ticket extends Model
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'replied_at' => 'datetime',
+        'messages' => 'array',
     ];
 
     public function author(): BelongsTo

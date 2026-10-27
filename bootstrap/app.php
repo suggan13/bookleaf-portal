@@ -1,11 +1,12 @@
 <?php
 
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
-use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -20,18 +21,29 @@ return Application::configure(basePath: dirname(__DIR__))
             'author' => \App\Http\Middleware\EnsureAuthor::class,
         ]);
 
-        // Exempt API routes from CSRF if testing via Postman / Fetch without CSRF token
-        $middleware->validateCsrfTokens(except: [
-            'api/*',
+        // State & Session persistence for SPA calls inside web.php
+        $middleware->web(append: [
+            \Illuminate\Session\Middleware\StartSession::class,
+            \Illuminate\View\Middleware\ShareErrorsFromSession::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        // Always force JSON response on API routes instead of generic HTML/500 pages
+        // Always force JSON response on API routes instead of HTML error pages
         $exceptions->shouldRenderJsonWhen(
             fn (Request $request) => $request->is('api/*') || $request->expectsJson()
         );
 
-        // Meaningful error responses
+        // Meaningful 401 Unauthenticated handler
+        $exceptions->render(function (AuthenticationException $e, Request $request) {
+            if ($request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Session expired or unauthenticated. Please sign in again.'
+                ], 401);
+            }
+        });
+
+        // 404 Not Found
         $exceptions->render(function (NotFoundHttpException $e, Request $request) {
             if ($request->is('api/*')) {
                 return response()->json([
@@ -41,6 +53,7 @@ return Application::configure(basePath: dirname(__DIR__))
             }
         });
 
+        // 403 Forbidden
         $exceptions->render(function (AccessDeniedHttpException $e, Request $request) {
             if ($request->is('api/*')) {
                 return response()->json([

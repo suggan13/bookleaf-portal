@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Author;
 use App\Models\Book;
+use App\Models\Ticket;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -93,6 +94,114 @@ class AuthorController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Unable to load your catalog and royalty overview at this moment.'
+            ], 500);
+        }
+    }
+
+    public function replyTicket(Request $request, $ticket_id)
+    {
+        try {
+            $user = Auth::user();
+
+            if (!$user || $user->role !== 'author' || !$user->author_id) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized action.'], 403);
+            }
+
+            $validated = $request->validate([
+                'message' => 'required|string|min:2'
+            ]);
+
+            // Scoped to current author to prevent IDOR vulnerabilities
+            $ticket = Ticket::where('ticket_id', $ticket_id)
+                ->where('author_id', $user->author_id)
+                ->first();
+
+            if (!$ticket) {
+                return response()->json(['success' => false, 'message' => 'Ticket not found or unauthorized.'], 404);
+            }
+
+            if ($ticket->status === 'Closed') {
+                return response()->json(['success' => false, 'message' => 'Closed tickets cannot receive replies.'], 400);
+            }
+
+            // Append author message to ticket description/thread
+            $currentDesc = $ticket->description ?? '';
+            $authorName = $user->name ?? 'Author';
+            $date = now()->format('d M Y, h:i A');
+            $updatedDescription = $currentDesc . "\n\n[Author Follow-up ({$date})]:\n" . trim($validated['message']);
+
+            // If ticket was resolved, automatically reopen to 'In Progress'
+            $newStatus = ($ticket->status === 'Resolved') ? 'In Progress' : $ticket->status;
+
+            $ticket->update([
+                'description' => $updatedDescription,
+                'status'      => $newStatus,
+                'updated_at'  => now()
+            ]);
+
+            $this->logAuthorAction('info', 'TICKET_REPLY_POSTED', [
+                'ticket_id' => $ticket_id,
+                'status'    => $newStatus
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => ($newStatus === 'In Progress' && $ticket->getOriginal('status') === 'Resolved')
+                    ? 'Ticket reopened successfully.'
+                    : 'Follow-up posted successfully.',
+                'ticket'  => $ticket->fresh()
+            ], 200);
+        } catch (Throwable $e) {
+            $this->logAuthorAction('error', 'TICKET_REPLY_FAILED', ['ticket_id' => $ticket_id], $e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to submit follow-up response.'
+            ], 500);
+        }
+    }
+
+    /**
+     * Author marks ticket as Closed (resolution confirmed)
+     */
+    public function closeTicket(Request $request, $ticket_id)
+    {
+        try {
+            $user = Auth::user();
+
+            if (!$user || $user->role !== 'author' || !$user->author_id) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized action.'], 403);
+            }
+
+            $ticket = Ticket::where('ticket_id', $ticket_id)
+                ->where('author_id', $user->author_id)
+                ->first();
+
+            if (!$ticket) {
+                return response()->json(['success' => false, 'message' => 'Ticket not found or unauthorized.'], 404);
+            }
+
+            $ticket->update([
+                'status'    => 'Closed',
+                'closed_at' => now()->toIso8601String(),
+                'updated_at' => now()
+            ]);
+
+            $this->logAuthorAction('info', 'TICKET_CLOSED_BY_AUTHOR', [
+                'ticket_id' => $ticket_id
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Ticket closed successfully.',
+                'ticket'  => $ticket->fresh()
+            ], 200);
+        } catch (Throwable $e) {
+            $this->logAuthorAction('error', 'TICKET_CLOSE_FAILED', ['ticket_id' => $ticket_id], $e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to close ticket.'
             ], 500);
         }
     }

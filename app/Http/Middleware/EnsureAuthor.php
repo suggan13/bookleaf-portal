@@ -15,7 +15,7 @@ class EnsureAuthor
         if (!$user) {
             return response()->json([
                 'success' => false,
-                'message' => 'Unauthenticated: Please sign in.'
+                'message' => 'Session expired. Please sign in again.'
             ], 401);
         }
 
